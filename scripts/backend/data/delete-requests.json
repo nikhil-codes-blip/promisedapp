@@ -1,0 +1,20 @@
+[
+  {
+    "id": "delreq_1754551783002_0vvwl8qrq",
+    "promiseId": "promise_1754378939041_sqquqhmoh",
+    "requesterAddress": "0x84a610d2da5f123be33b6ab4c001b25b399ff5c2",
+    "status": "approved",
+    "requestedAt": 1754551783002,
+    "processedBy": "0x84a610d2da45f123be33b64b4c001b25b399ff5c2",
+    "processedAt": 1754551789781
+  },
+  {
+    "id": "delreq_1754551829875_pu76638fv",
+    "promiseId": "promise_1754551820168_xy7b0vwud",
+    "requesterAddress": "0x84a610d2da5f123be33b6ab4c001b25b399ff5c2",
+    "status": "rejected",
+    "requestedAt": 1754551829875,
+    "processedBy": "0x84a610d2da45f123be33b64b4c001b25b399ff5c2",
+    "processedAt": 1754551837166
+  }
+]
