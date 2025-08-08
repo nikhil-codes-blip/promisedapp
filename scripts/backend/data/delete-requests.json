@@ -16,5 +16,14 @@
     "requestedAt": 1754551829875,
     "processedBy": "0x84a610d2da45f123be33b64b4c001b25b399ff5c2",
     "processedAt": 1754551837166
+  },
+  {
+    "id": "delreq_1754636170385_aky5n1hu8",
+    "promiseId": "promise_1754378765872_hiheugdgk",
+    "requesterAddress": "0x84a610d2da5f123be33b6ab4c001b25b399ff5c2",
+    "status": "approved",
+    "requestedAt": 1754636170385,
+    "processedBy": "0xfb918bac7ba0c324f573b2763cd4ec08cdec5647",
+    "processedAt": 1754636301077
   }
 ]

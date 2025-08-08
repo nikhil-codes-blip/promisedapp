@@ -308,7 +308,7 @@ export default function PublicPromiseRegistry() {
           <div>
             <h1 className="flex items-center gap-3 text-5xl font-bold leading-tight">
               <Image
-                src="/placeholder.svg"
+                src="/logo.png" // <- changed from placeholder.svg
                 alt="Promise Registry Logo"
                 width={64}
                 height={64}
@@ -318,8 +318,11 @@ export default function PublicPromiseRegistry() {
                 Promise Registry
               </span>
             </h1>
-            <p className="text-cyan-300 mt-3 text-lg ml-20">Commit to your goals on the blockchain ⛓️</p>
+            <p className="text-cyan-300 mt-3 text-lg ml-20">
+              Commit to your goals on the blockchain ⛓️
+            </p>
           </div>
+
 
           <div className="flex items-center gap-4">
             {user && isConnected && (
