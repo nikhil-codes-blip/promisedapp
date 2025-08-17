@@ -1,5 +1,7 @@
 export interface PromiseData {
   id: string
+  creatorName?: string // Optional field for creator's name
+  creator_display_name?: string;
   address: string
   message: string
   deadline: number
@@ -9,6 +11,8 @@ export interface PromiseData {
   category: string
   difficulty: "easy" | "medium" | "hard"
   adminAdjustedProgress?: number // Mapped from admin_adjusted_progress in DB
+  updated_at?: string
+  created_by?: string
 }
 
 export interface UserData {
@@ -41,7 +45,9 @@ export interface DeleteRequest {
 }
 
 export interface UserStats {
+  id: string;
   address: string
+  name: string | null
   reputation: number
   completedPromises: number
   failedPromises: number
@@ -56,4 +62,15 @@ export interface GlobalStats {
   completionRate: number
   averageReputation: number
   topPerformer: string | null
+  completedPromises: number
+  failedPromises: number
+  activePromises: number
+  highestStreak: number
+  myStreak: number // ✅ NEW
+}
+
+export interface RealtimePayload {
+  eventType: "INSERT" | "UPDATE" | "DELETE";
+  new?: PromiseData;
+  old?: { id: string };
 }

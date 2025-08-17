@@ -10,6 +10,7 @@ CREATE TABLE public.promises (
     status TEXT NOT NULL DEFAULT 'active', -- 'active', 'completed', 'failed'
     proof TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- New column for tracking updates
     category TEXT NOT NULL,
     difficulty TEXT NOT NULL,
     admin_adjusted_progress INT
@@ -28,14 +29,10 @@ CREATE POLICY "Users can insert their own promises."
 ON public.promises FOR INSERT
 WITH CHECK (auth.uid() IS NOT NULL AND address = (SELECT address FROM public.users WHERE id = auth.uid()));
 
--- Policy for users to update their own active promises, and for admin to update any promise
-CREATE POLICY "Users can update their own active promises and admin can update any."
+-- Policy for users to update their own active promises
+CREATE POLICY "Users can update their own active promises."
 ON public.promises FOR UPDATE
-USING (
-  (auth.uid() IS NOT NULL AND address = (SELECT address FROM public.users WHERE id = auth.uid()) AND status = 'active')
-  OR
-  (auth.role() = 'service_role')
-);
+USING (auth.uid() IS NOT NULL AND address = (SELECT address FROM public.users WHERE id = auth.uid()) AND status = 'active');
 
 -- Policy for users to request deletion of their own promises (handled by admin API)
 -- This policy is more about allowing the API to read/write delete requests, not direct user deletion.

@@ -1,7 +1,7 @@
 "use client"
 
 import { supabase } from "./supabase-client"
-import type { PromiseData, UserStats, GlobalStats, DeleteRequest } from "@/types"
+import type { PromiseData, UserStats, GlobalStats, DeleteRequest, RealtimePayload } from "@/types"
 
 // Update API URL to point to Next.js API routes
 const ADMIN_API_BASE_URL = "/api/admin" // Base URL for admin API routes
@@ -12,46 +12,84 @@ export class RealtimeService {
   private reconnectDelay = 1000
   private sessionId: string | null = null
 
-  private promiseUpdateCallbacks: ((promise: PromiseData) => void)[] = []
-  private newPromiseCallbacks: ((promise: PromiseData) => void)[] = []
-  private promiseDeleteCallbacks: ((promiseId: string) => void)[] = []
   private statsUpdateCallbacks: ((stats: GlobalStats) => void)[] = []
+  private userUpdateCallbacks: ((user: UserStats) => void)[] = [] 
+
   private deleteRequestCallbacks: ((request: DeleteRequest) => void)[] = []
+  
+  // ... inside the RealtimeService class, at the end
+  onUserUpdate(callback: (user: UserStats) => void): () => void {
+    this.userUpdateCallbacks.push(callback);
+    return () => {
+      this.userUpdateCallbacks = this.userUpdateCallbacks.filter((cb) => cb !== callback);
+    };
+    }
 
   constructor() {
     // Listen for real-time changes from Supabase
     supabase
       .channel("public:promises")
       .on("postgres_changes", { event: "*", schema: "public", table: "promises" }, (payload) => {
-        const newPromise = payload.new as PromiseData
-        const oldPromise = payload.old as PromiseData
+        // Correctly map the database record (snake_case) to our app's data type (camelCase)
+        const mapPromise = (p: any): PromiseData => ({
+          id: p.id,
+          creatorName: p.creator_name,
+          address: p.address,
+          message: p.message,
+          deadline: p.deadline,
+          status: p.status,
+          proof: p.proof,
+          createdAt: new Date(p.created_at).getTime(),
+          category: p.category,
+          difficulty: p.difficulty,
+          adminAdjustedProgress: p.admin_adjusted_progress,
+          created_by: p.created_by,
+        });
 
         if (payload.eventType === "INSERT") {
-          this.newPromiseCallbacks.forEach((callback) => callback(newPromise))
-          this.updateGlobalStatsFromSupabase() // Trigger stats update
         } else if (payload.eventType === "UPDATE") {
-          this.promiseUpdateCallbacks.forEach((callback) => callback(newPromise))
-          this.updateGlobalStatsFromSupabase() // Trigger stats update
         } else if (payload.eventType === "DELETE") {
-          this.promiseDeleteCallbacks.forEach((callback) => callback(oldPromise.id))
-          this.updateGlobalStatsFromSupabase() // Trigger stats update
         }
+        // Always update global stats on any promise change
+        this.updateGlobalStatsFromSupabase();
       })
-      .subscribe()
+      .subscribe();
 
     supabase
       .channel("public:users")
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => {
-        this.updateGlobalStatsFromSupabase() // User changes affect global stats
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, (payload) => {
+        console.log("Real-time user update received:", payload.new);
+        // Add "(payload.new as any)" to reassure TypeScript that the properties exist
+        const updatedUser = {
+          id: (payload.new as any).id,
+          name: (payload.new as any).name,
+          address: (payload.new as any).address,
+          reputation: (payload.new as any).reputation,
+          completedPromises: (payload.new as any).completed_promises,
+          failedPromises: (payload.new as any).failed_promises,
+          totalPromises: (payload.new as any).total_promises,
+          streak: (payload.new as any).streak,
+          level: (payload.new as any).level,
+        } as UserStats;
+        
+        if (payload.eventType === "UPDATE" || payload.eventType === "INSERT") {
+          this.userUpdateCallbacks.forEach((callback) => callback(updatedUser));
+        }
+        // Also update the global stats
+        this.updateGlobalStatsFromSupabase();
       })
-      .subscribe()
-
-    supabase
-      .channel("public:sessions")
-      .on("postgres_changes", { event: "*", schema: "public", table: "sessions" }, () => {
-        this.updateGlobalStatsFromSupabase() // Session changes affect total users
-      })
-      .subscribe()
+      .subscribe();
+  }
+  
+    async updateUserName(userId: string, name: string) {
+    const { error } = await supabase
+      .from("users")
+      .update({ name: name })
+      .eq("id", userId);
+    if (error) {
+      throw new Error(`Failed to update user name: ${error.message}`);
+    }
+    console.log(`✅ User name updated for UID: ${userId}`);
   }
 
   async connect(sessionId: string) {
@@ -95,166 +133,243 @@ export class RealtimeService {
     }
   }
 
-  async getInitialPromises(): Promise<PromiseData[]> {
-    try {
-      const { data, error } = await supabase.from("promises").select("*").order("created_at", { ascending: false })
+ async getInitialPromises(): Promise<PromiseData[]> {
+  try {
+    const { data, error } = await supabase
+      .from("promises_with_creator") // Querying the view with creator names
+      .select("*")
+      .order("created_at", { ascending: false });
 
-      if (error) throw new Error(error.message)
-      // Map snake_case to camelCase for PromiseData
-      return data.map((p: any) => ({
-        id: p.id,
-        address: p.address,
-        message: p.message,
-        deadline: p.deadline,
-        status: p.status,
-        proof: p.proof,
-        createdAt: new Date(p.created_at).getTime(), // Convert timestamp to number
-        category: p.category,
-        difficulty: p.difficulty,
-        adminAdjustedProgress: p.admin_adjusted_progress,
-      })) as PromiseData[]
-    } catch (error) {
-      console.error("Error fetching initial promises from Supabase:", error)
-      return []
-    }
+    if (error) throw new Error(error.message);
+
+    // Map the data from the database to your app's data structure
+    return data.map((p: any) => ({
+      id: p.id,
+      address: p.address,
+      message: p.message,
+      deadline: new Date(p.deadline).getTime(),
+      status: p.status,
+      proof: p.proof,
+      createdAt: new Date(p.created_at).getTime(),
+      category: p.category,
+      difficulty: p.difficulty,
+      adminAdjustedProgress: p.admin_adjusted_progress,
+      creatorName: p.creator_display_name, // Correctly map the display name from the view
+      created_by: p.created_by,
+    })) as PromiseData[];
+
+  } catch (error) {
+    console.error("Error fetching initial promises from Supabase:", error);
+    return [];
   }
+}
 
-  async getUserStats(address: string): Promise<UserStats> {
+  async getUserStats(address: string, creatorName?: string): Promise<UserStats> {
     try {
-      const { data, error } = await supabase.from("users").select("*").eq("address", address.toLowerCase()).single()
+      // Get current authenticated user's UID
+      const {
+        data: { user: authUser },
+      } = await supabase.auth.getUser()
+      console.log("getUserStats called for address:", address, "creatorName:", creatorName, "Current auth UID:", authUser?.id)
 
-      if (error && error.code !== "PGRST116") {
-        // PGRST116 means no rows found
-        throw new Error(error.message)
+      let existingUser = null;
+      let fetchError = null;
+
+      // First try to find user by name if provided
+      if (creatorName) {
+        const { data: userByName, error: nameError } = await supabase
+          .from("users")
+          .select("*")
+          .eq("name", creatorName)
+          .single()
+        
+        if (!nameError && userByName) {
+          existingUser = userByName;
+        }
       }
 
-      if (data) {
+      // If not found by name, try by address as fallback
+      if (!existingUser) {
+        const { data: userByAddress, error: addressError } = await supabase
+          .from("users")
+          .select("*")
+          .eq("address", address.toLowerCase())
+          .single()
+        
+        if (!addressError && userByAddress) {
+          existingUser = userByAddress;
+        }
+        fetchError = addressError;
+      }
+
+      if (fetchError && fetchError.code !== "PGRST116") {
+        // PGRST116 means no rows found
+        throw new Error(fetchError.message)
+      }
+
+      if (existingUser) {
+        // User found - update auth ID if needed
+        if (authUser && existingUser.id !== authUser.id) {
+          console.log("Updating existing user's auth ID:", existingUser.id, "->", authUser.id)
+          const { error: updateIdError } = await supabase
+            .from("users")
+            .update({ 
+              id: authUser.id,
+              address: address.toLowerCase(),
+              last_active: new Date().toISOString()
+            })
+            .eq("id", existingUser.id)
+          if (updateIdError) {
+            console.error("Error updating user's auth ID:", updateIdError)
+          }
+        }
+
+        // Update last_active
+        await supabase
+          .from("users")
+          .update({ last_active: new Date().toISOString() })
+          .eq("id", existingUser.id)
+
         return {
-          address: data.address,
-          reputation: data.reputation,
-          completedPromises: data.completed_promises,
-          failedPromises: data.failed_promises,
-          totalPromises: data.total_promises,
-          streak: data.streak,
-          level: data.level,
+          id: existingUser.id,
+          name: existingUser.name,
+          address: existingUser.address,
+          reputation: existingUser.reputation || 0,
+          completedPromises: existingUser.completed_promises || 0,
+          failedPromises: existingUser.failed_promises || 0,
+          totalPromises: existingUser.total_promises || 0,
+          streak: existingUser.streak || 0,
+          level: existingUser.level || 1,
         }
       } else {
-        // Create user if not found
+        // User not found - create new
+        console.log("Creating new user profile for:", creatorName || address, "with auth UID:", authUser?.id)
+
         const { data: newUser, error: createError } = await supabase
           .from("users")
-          .insert({ address: address.toLowerCase() })
+          .insert({
+            id: authUser?.id || `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            name: creatorName || null,
+            address: address.toLowerCase(),
+            reputation: 0,
+            completed_promises: 0,
+            failed_promises: 0,
+            total_promises: 0,
+            streak: 0,
+            level: 1,
+            last_active: new Date().toISOString(),
+            joined_at: new Date().toISOString()
+          })
           .select()
           .single()
 
-        if (createError) throw new Error(createError.message)
+        if (createError) {
+          console.error("Error creating new user in Supabase:", createError)
+          throw new Error(createError.message)
+        }
+        console.log("Successfully created new user:", newUser)
         return {
+          id: newUser.id,
+          name: newUser.name,
           address: newUser.address,
-          reputation: newUser.reputation,
-          completedPromises: newUser.completed_promises,
-          failedPromises: newUser.failed_promises,
-          totalPromises: newUser.total_promises,
-          streak: newUser.streak,
-          level: newUser.level,
+          reputation: newUser.reputation || 0,
+          completedPromises: newUser.completed_promises || 0,
+          failedPromises: newUser.failed_promises || 0,
+          totalPromises: newUser.total_promises || 0,
+          streak: newUser.streak || 0,
+          level: newUser.level || 1,
         }
       }
     } catch (error) {
       console.error("Error fetching/creating user stats in Supabase:", error)
-      return {
-        address,
-        reputation: 0,
-        completedPromises: 0,
-        failedPromises: 0,
-        totalPromises: 0,
-        streak: 0,
-        level: 1,
-      }
+      return { id: "", name: creatorName || null, address, reputation: 0, completedPromises: 0, failedPromises: 0, totalPromises: 0, streak: 0, level: 1 }
     }
   }
 
-  private async updateGlobalStatsFromSupabase(): Promise<void> {
-    try {
-      const { data: totalUsersData, error: usersError } = await supabase
-        .from("sessions")
-        .select("session_id", { count: "exact" })
-      if (usersError) throw new Error(usersError.message)
-      const totalUsers = totalUsersData?.length || 0
+private async updateGlobalStatsFromSupabase(userAddress?: string): Promise<void> {
+  try {
+    const { data, error } = await supabase.rpc("get_global_stats", {
+      p_address: userAddress?.toLowerCase() || null
+    });
 
-      const { data: promisesData, error: promisesError } = await supabase.from("promises").select("id, status")
-      if (promisesError) throw new Error(promisesError.message)
-      const totalPromises = promisesData?.length || 0
-      const completedPromises = promisesData?.filter((p) => p.status === "completed").length || 0
-      const completionRate = totalPromises > 0 ? (completedPromises / totalPromises) * 100 : 0
+    if (error) throw error;
 
-      const { data: allUsersData, error: allUsersError } = await supabase.from("users").select("reputation")
-      if (allUsersError) throw new Error(allUsersError.message)
-      const totalReputation = allUsersData?.reduce((sum, user) => sum + user.reputation, 0) || 0
-      const averageReputation = totalUsers > 0 ? totalReputation / totalUsers : 0
-
-      const { data: topPerformerData, error: topPerformerError } = await supabase
-        .from("users")
-        .select("address, reputation")
-        .order("reputation", { ascending: false })
-        .limit(1)
-        .single()
-      if (topPerformerError && topPerformerError.code !== "PGRST116") throw new Error(topPerformerError.message)
-      const topPerformer = topPerformerData?.address || null
-
-      const stats: GlobalStats = {
-        totalUsers,
-        totalPromises,
-        completionRate: Number.parseFloat(completionRate.toFixed(2)),
-        averageReputation: Number.parseFloat(averageReputation.toFixed(2)),
-        topPerformer,
-      }
-      this.statsUpdateCallbacks.forEach((callback) => callback(stats))
-    } catch (error) {
-      console.error("Error updating global stats from Supabase:", error)
+    if (data) {
+      this.statsUpdateCallbacks.forEach((cb) => cb(data as GlobalStats));
     }
+  } catch (err) {
+    console.error("Error fetching global stats:", err);
   }
+}
+
 
   async getGlobalStats(): Promise<GlobalStats> {
     // This will be called once on initial load, then real-time updates will push
     // the latest stats via the `statsUpdateCallbacks`.
     // For now, we'll just return a default and let the real-time listener update it.
-    return { totalUsers: 0, totalPromises: 0, completionRate: 0, averageReputation: 0, topPerformer: null }
+    return { totalUsers: 0, totalPromises: 0, completionRate: 0, averageReputation: 0, topPerformer: null, completedPromises: 0, failedPromises: 0, activePromises: 0, highestStreak: 0, myStreak: 0 }
   }
 
   async createPromise(promise: PromiseData): Promise<PromiseData> {
-    console.log("🚀 Creating promise in Supabase:", promise.message)
-    try {
-      const newPromiseId = `promise_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-      const { data, error } = await supabase
-        .from("promises")
-        .insert({
-          id: newPromiseId,
-          address: promise.address.toLowerCase(),
-          message: promise.message,
-          deadline: promise.deadline,
-          status: promise.status,
-          proof: promise.proof,
-          category: promise.category,
-          difficulty: promise.difficulty,
-          admin_adjusted_progress: promise.adminAdjustedProgress,
-        })
-        .select()
-        .maybeSingle()
+  console.log("🚀 Creating promise in Supabase:", promise.message);
+  try {
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser(); // ✅ Get current auth user
 
-      if (error) throw new Error(error.message)
-      if (!data) throw new Error("Promise creation failed. The record was not returned after insert.")
+    const newPromiseId = `promise_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const { data, error } = await supabase
+      .from("promises")
+      .insert({
+        id: newPromiseId,
+        address: promise.address.toLowerCase(),
+        creator_id: authUser?.id || null, // ✅ Save creator_id
+        creator_name: promise.creatorName,
+        message: promise.message,
+        deadline: promise.deadline,
+        status: promise.status,
+        proof: promise.proof,
+        category: promise.category,
+        difficulty: promise.difficulty,
+        admin_adjusted_progress: promise.adminAdjustedProgress,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
 
-      // Update user's total promises
-      const { data: user, error: userError } = await supabase
+    if (error) throw new Error(error.message);
+
+      // Update user's total promises by address (since address is unique)
+      const { data: userData, error: userError } = await supabase
         .from("users")
         .select("total_promises")
         .eq("address", promise.address.toLowerCase())
-        .maybeSingle()
+        .single()
 
-      if (userError) throw new Error(userError.message)
-
-      await supabase
-        .from("users")
-        .update({ total_promises: (user?.total_promises || 0) + 1, last_active: new Date().toISOString() })
-        .eq("address", promise.address.toLowerCase())
+      if (userError && userError.code !== "PGRST116") {
+        // If user doesn't exist, create them
+        if (userError.code === "PGRST116") {
+          const { error: createUserError } = await supabase
+            .from("users")
+            .insert({
+              id: authUser?.id,
+              address: promise.address.toLowerCase(),
+              name: promise.creatorName,
+              total_promises: 1,
+              last_active: new Date().toISOString(),
+              joined_at: new Date().toISOString()
+            })
+          if (createUserError) {
+            console.error("Error creating user during promise creation:", createUserError)
+          }
+        }
+      } else {
+        // Update existing user
+        await supabase
+          .from("users")
+          .update({ total_promises: (userData?.total_promises || 0) + 1, last_active: new Date().toISOString() })
+          .eq("address", promise.address.toLowerCase())
+      }
 
       console.log("✅ Promise created successfully in Supabase")
       // Ensure created_at is mapped to createdAt for the returned PromiseData
@@ -276,107 +391,214 @@ export class RealtimeService {
     }
   }
 
-  async updatePromiseStatus(
-    promiseId: string,
-    status: "completed" | "failed",
-    proof?: string,
-    updaterAddress?: string,
-  ): Promise<PromiseData> {
-    console.log(`📝 Updating promise ${promiseId} status in Supabase to ${status}`)
+async updatePromiseStatus(
+  promiseId: string,
+  status: string,
+  proof: string,
+  updaterAddress: string
+) {
+  // 1️⃣ Build update data
+  const updateData: any = {
+    status,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (proof) {
+    updateData.proof = proof;
+  }
+
+  // 2️⃣ Update promise row in Supabase
+  const { data: updatedRow, error: updateError } = await supabase
+    .from("promises")
+    .update(updateData)
+    .eq("id", promiseId)
+    .select()
+    .single();
+
+  if (updateError) throw new Error(`Update failed: ${updateError.message}`);
+  console.log("✅ Promise updated in DB:", updatedRow);
+
+  // 3️⃣ Update user stats (don’t overwrite promise row)
+  const { error: statsError } = await supabase.rpc("update_user_stats", {
+    p_promise_id: promiseId,
+    p_status: status,
+    p_address: updaterAddress.toLowerCase(),
+  });
+
+  if (statsError) {
+    console.error("⚠️ Error updating user stats (but promise is updated):", statsError);
+  }
+}
+
+  private async updateUserReputationAfterPromiseUpdate(promise: any, newStatus: string, originalStatus?: string) {
     try {
-      const { data: existingPromise, error: fetchError } = await supabase
-        .from("promises")
-        .select("address, status")
-        .eq("id", promiseId)
-        .maybeSingle()
-
-      if (fetchError) throw new Error(fetchError.message)
-      if (!existingPromise) throw new Error(`Promise with ID ${promiseId} not found.`)
-      if (existingPromise.status !== "active") throw new Error("Promise is not active and cannot be updated.")
-      if (existingPromise.address.toLowerCase() !== updaterAddress?.toLowerCase()) {
-        throw new Error("Only the promise owner can update its status.")
+      console.log(`🎯 Updating user reputation for promise status change to: ${newStatus}`);
+      console.log(`Previous promise status was: ${promise.status}`);
+      console.log(`Promise data:`, promise);
+      
+      // Use originalStatus if provided, otherwise fall back to promise.status
+      const actualOriginalStatus = originalStatus || promise.status;
+      console.log(`Actual original status: ${actualOriginalStatus}, New status: ${newStatus}`);
+      
+      // Skip reputation update if status didn't actually change
+      if (actualOriginalStatus === newStatus) {
+        console.log("Status didn't change, skipping reputation update");
+        return;
       }
-
-      const { data, error } = await supabase
-        .from("promises")
-        .update({ status, proof, updated_at: new Date().toISOString() })
-        .eq("id", promiseId)
-        .select()
-        .maybeSingle()
-
-      if (error) throw new Error(error.message)
-      if (!data) throw new Error("Promise update failed. The promise may not exist or no changes were applied.")
-
-      // Update user's reputation and stats
-      let user;
-      const { data: userData, error: userFetchError } = await supabase
-        .from("users")
-        .select("*")
-        .eq("address", updaterAddress!.toLowerCase())
-        .maybeSingle() // Changed to maybeSingle()
-      user = userData;
-
-      if (userFetchError) throw new Error(userFetchError.message)
-
-      // If user does not exist, create them
-      if (!user) {
-        const { data: newUser, error: createError } = await supabase
+      
+      // Get current authenticated user to ensure we're updating the right user
+      const { data: authData } = await supabase.auth.getUser();
+      const currentAuthUid = authData?.user?.id;
+      
+      // Find user by multiple methods for better reliability
+      let user = null;
+      let userError = null;
+      
+      // Method 1: Try by current auth UID first (most reliable)
+      if (currentAuthUid) {
+        const { data: userByAuth, error: authError } = await supabase
           .from("users")
-          .insert({ address: updaterAddress!.toLowerCase() })
-          .select()
-          .maybeSingle()
-        if (createError) throw new Error(createError.message)
-        if (!newUser) throw new Error("Failed to create user.")
-        user = newUser // Assign the newly created user
+          .select("*")
+          .eq("id", currentAuthUid)
+          .single();
+        if (!authError && userByAuth) {
+          user = userByAuth;
+          console.log("✅ Found user by auth UID:", user.id, user.name);
+        }
+      }
+      
+      // Method 2: Try by creator_name if provided and not found yet
+      if (!user && promise.creator_name) {
+        const { data: userByName, error: nameError } = await supabase
+          .from("users")
+          .select("*")
+          .eq("name", promise.creator_name)
+          .single();
+        if (!nameError && userByName) {
+          user = userByName;
+          console.log("✅ Found user by creator name:", user.id, user.name);
+        } else {
+          userError = nameError;
+        }
+      }
+      
+      // Method 3: Try by address as fallback
+      if (!user && promise.address) {
+        const { data: userByAddress, error: addressError } = await supabase
+          .from("users")
+          .select("*")
+          .eq("address", promise.address.toLowerCase())
+          .single();
+        if (!addressError && userByAddress) {
+          user = userByAddress;
+          console.log("✅ Found user by address:", user.id, user.name);
+        } else {
+          userError = addressError;
+        }
+      }
+      
+      if (!user) {
+        console.error("❌ User not found for reputation update:", {
+          promise_creator_name: promise.creator_name,
+          promise_address: promise.address,
+          currentAuthUid,
+          lastError: userError
+        });
+        return;
       }
 
-      let reputationChange = 0
-      let completedPromises = user.completed_promises
-      let failedPromises = user.failed_promises
-      let streak = user.streak
+      console.log(`📊 Current user stats before update:`, {
+        reputation: user.reputation || 0,
+        completed: user.completed_promises || 0,
+        failed: user.failed_promises || 0,
+        streak: user.streak || 0
+      });
 
-      if (status === "completed") {
-        reputationChange = 10
-        completedPromises += 1
-        streak += 1
-      } else if (status === "failed") {
-        reputationChange = -5
-        failedPromises += 1
-        streak = 0
+      // Calculate reputation changes based on status transition
+      let reputationChange = 0;
+      let completedChange = 0;
+      let failedChange = 0;
+      let streakChange = 0;
+      
+      // Handle previous status reversal first (if changing from completed/failed)
+      // Use actualOriginalStatus which is more reliable
+      if (actualOriginalStatus === "completed") {
+        reputationChange -= 10; // Reverse previous +10
+        completedChange -= 1;
+        console.log("⏪ Reversing previous completion (+10 reputation, +1 completed)");
+      } else if (actualOriginalStatus === "failed") {
+        reputationChange += 5; // Reverse previous -5
+        failedChange -= 1;
+        console.log("⏪ Reversing previous failure (-5 reputation, +1 failed)");
+      }
+      
+      // Apply new status changes
+      if (newStatus === "completed") {
+        reputationChange += 10; // +10 for completion
+        completedChange += 1;
+        streakChange = 1; // Increment streak
+        console.log("✅ Applying completion (+10 reputation, +1 completed, +1 streak)");
+      } else if (newStatus === "failed") {
+        reputationChange -= 5; // -5 for failure
+        failedChange += 1;
+        streakChange = -(user.streak || 0); // Reset streak to 0
+        console.log("❌ Applying failure (-5 reputation, +1 failed, reset streak)");
       }
 
-      const newReputation = Math.max(0, user.reputation + reputationChange)
-      const newLevel = Math.floor(newReputation / 50) + 1
+      console.log(`📈 Calculated changes:`, {
+        reputation: reputationChange,
+        completed: completedChange,
+        failed: failedChange,
+        streak: streakChange
+      });
 
-      await supabase
+      // Update user stats (with safety checks)
+      const updatedReputation = Math.max(0, (user.reputation || 0) + reputationChange);
+      const updatedCompleted = Math.max(0, (user.completed_promises || 0) + completedChange);
+      const updatedFailed = Math.max(0, (user.failed_promises || 0) + failedChange);
+      const updatedStreak = Math.max(0, (user.streak || 0) + streakChange);
+      const updatedLevel = Math.floor(updatedReputation / 100) + 1; // Level up every 100 reputation
+
+      console.log(`📊 Final values to update:`, {
+        reputation: updatedReputation,
+        completed: updatedCompleted,
+        failed: updatedFailed,
+        streak: updatedStreak,
+        level: updatedLevel
+      });
+
+      const { error: updateError } = await supabase
         .from("users")
         .update({
-          reputation: newReputation,
-          completed_promises: completedPromises,
-          failed_promises: failedPromises,
-          streak: streak,
-          level: newLevel,
-          last_active: new Date().toISOString(),
+          reputation: updatedReputation,
+          completed_promises: updatedCompleted,
+          failed_promises: updatedFailed,
+          streak: updatedStreak,
+          level: updatedLevel,
+          last_active: new Date().toISOString()
         })
-        .eq("address", updaterAddress!.toLowerCase())
+        .eq("id", user.id);
 
-      console.log("✅ Promise status updated successfully in Supabase")
-      // Ensure created_at is mapped to createdAt for the returned PromiseData
-      return {
-        id: data.id,
-        address: data.address,
-        message: data.message,
-        deadline: data.deadline,
-        status: data.status,
-        proof: data.proof,
-        createdAt: new Date(data.created_at).getTime(),
-        category: data.category,
-        difficulty: data.difficulty,
-        adminAdjustedProgress: data.admin_adjusted_progress,
-      } as PromiseData
+      if (updateError) {
+        console.error("❌ Error updating user reputation in database:", updateError);
+        throw updateError;
+      }
+
+      console.log(`✅ User reputation successfully updated in database:`);
+      console.log(`   User ID: ${user.id}`);
+      console.log(`   Reputation: ${user.reputation || 0} -> ${updatedReputation} (${reputationChange >= 0 ? '+' : ''}${reputationChange})`);
+      console.log(`   Completed: ${user.completed_promises || 0} -> ${updatedCompleted} (${completedChange >= 0 ? '+' : ''}${completedChange})`);
+      console.log(`   Failed: ${user.failed_promises || 0} -> ${updatedFailed} (${failedChange >= 0 ? '+' : ''}${failedChange})`);
+      console.log(`   Streak: ${user.streak || 0} -> ${updatedStreak} (${streakChange >= 0 ? '+' : ''}${streakChange})`);
+      console.log(`   Level: ${updatedLevel}`);
+      
+      // Force refresh of global stats after user update
+      console.log(`🔄 Triggering global stats update after reputation change...`);
+      await this.updateGlobalStatsFromSupabase();
+      
     } catch (error) {
-      console.error("Error updating promise status in Supabase:", error)
-      throw error
+      console.error("❌ Error in updateUserReputationAfterPromiseUpdate:", error);
+      // Don't throw here to avoid breaking the promise update flow
     }
   }
 
@@ -432,7 +654,6 @@ export class RealtimeService {
       }
       const result = await response.json()
       const deletedPromiseId = result.promiseId // Assuming the API returns the deleted promise ID
-      this.promiseDeleteCallbacks.forEach((callback) => callback(deletedPromiseId))
       await this.updateGlobalStatsFromSupabase() // Trigger stats update
       console.log(`✅ Promise deleted by admin (via API route)`)
       return deletedPromiseId
@@ -506,6 +727,7 @@ export class RealtimeService {
       const data = await response.json()
       return data.map((p: any) => ({
         id: p.id,
+        creatorName: p.creator_name, // Map creator_name to creatorName
         address: p.address,
         message: p.message,
         deadline: p.deadline,
@@ -535,7 +757,6 @@ export class RealtimeService {
         throw new Error(errorData.error || "Failed to update promise progress")
       }
       const updatedPromise = await response.json()
-      this.promiseUpdateCallbacks.forEach((callback) => callback(updatedPromise)) // Notify listeners
       console.log(`✅ Promise progress updated by admin (via API route)`)
       // Ensure created_at is mapped to createdAt for the returned PromiseData
       return {
@@ -556,38 +777,77 @@ export class RealtimeService {
     }
   }
 
-  onPromiseUpdate(callback: (promise: PromiseData) => void): () => void {
-    this.promiseUpdateCallbacks.push(callback)
-    return () => {
-      this.promiseUpdateCallbacks = this.promiseUpdateCallbacks.filter((cb) => cb !== callback)
+  async updatePromiseDetails(
+    promiseId: string,
+    updates: Partial<PromiseData>,
+    updaterAddress: string,
+  ): Promise<PromiseData> {
+    console.log(`📝 Updating promise ${promiseId} details in Supabase via API route`)
+    try {
+      const response = await fetch(`/api/promises/update-details`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ promiseId, updates, updaterAddress }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(`Failed to update promise details: ${errorData.error}`)
+      }
+      const updatedPromise = await response.json()
+      console.log(`✅ Promise details updated successfully (via API route)`)
+      return {
+        id: updatedPromise.id,
+        address: updatedPromise.address,
+        message: updatedPromise.message,
+        deadline: updatedPromise.deadline,
+        status: updatedPromise.status,
+        proof: updatedPromise.proof,
+        createdAt: new Date(updatedPromise.created_at).getTime(),
+        category: updatedPromise.category,
+        difficulty: updatedPromise.difficulty,
+        adminAdjustedProgress: updatedPromise.admin_adjusted_progress,
+      } as PromiseData
+    } catch (error) {
+      console.error("Error updating promise details via API route:", error)
+      throw error
     }
   }
 
-  onNewPromise(callback: (promise: PromiseData) => void): () => void {
-    this.newPromiseCallbacks.push(callback)
-    return () => {
-      this.newPromiseCallbacks = this.newPromiseCallbacks.filter((cb) => cb !== callback)
-    }
+  subscribeToChanges(callback: (payload: RealtimePayload) => void) {
+    supabase
+      .channel("public:promises")
+      .on("postgres_changes", { event: "*", schema: "public", table: "promises" }, (payload) => {
+        const mapPromise = (p: any): PromiseData => ({
+          id: p.id,
+          creatorName: p.creator_name,
+          address: p.address,
+          message: p.message,
+          deadline: p.deadline,
+          status: p.status,
+          proof: p.proof,
+          createdAt: new Date(p.created_at).getTime(),
+          category: p.category,
+          difficulty: p.difficulty,
+          adminAdjustedProgress: p.admin_adjusted_progress,
+          created_by: p.created_by,
+        });
+
+        const realtimePayload: RealtimePayload = {
+          eventType: payload.eventType as "INSERT" | "UPDATE" | "DELETE",
+          new: payload.new ? mapPromise(payload.new) : undefined,
+          old: payload.old ? { id: (payload.old as any).id } : undefined,
+        };
+        callback(realtimePayload);
+      })
+      .subscribe();
   }
 
-  onPromiseDelete(callback: (promiseId: string) => void): () => void {
-    this.promiseDeleteCallbacks.push(callback)
-    return () => {
-      this.promiseDeleteCallbacks = this.promiseDeleteCallbacks.filter((cb) => cb !== callback)
-    }
-  }
-
-  onStatsUpdate(callback: (stats: GlobalStats) => void): () => void {
+  onStatsUpdate(callback: (stats: GlobalStats) => void) {
     this.statsUpdateCallbacks.push(callback)
-    return () => {
-      this.statsUpdateCallbacks = this.statsUpdateCallbacks.filter((cb) => cb !== callback)
-    }
   }
 
-  onDeleteRequest(callback: (request: DeleteRequest) => void): () => void {
+  onDeleteRequest(callback: (request: DeleteRequest) => void) {
     this.deleteRequestCallbacks.push(callback)
-    return () => {
-      this.deleteRequestCallbacks = this.deleteRequestCallbacks.filter((cb) => cb !== callback)
-    }
   }
 }

@@ -129,6 +129,17 @@ class UserStorageService {
   // User Management (now directly in Supabase)
   async createUser(address: string, userData: Partial<UserData> = {}): Promise<UserData> {
     try {
+      // When using service role key, we can directly insert.
+      // However, if we want to link to auth.users, we need the auth.uid().
+      // For simplicity here, we'll assume the `id` column in `public.users` is optional
+      // or handled by a default value in the SQL if auth.uid() is not passed.
+      // If `id` is a foreign key to `auth.users(id)`, it must be provided.
+      // Given the SQL, `id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid()`,
+      // it will automatically use auth.uid() if the service role key is used in a context
+      // where a user is authenticated, or it will be null if not.
+      // For backend operations, we might not have an auth.uid() directly.
+      // Let's ensure the insert statement is robust.
+
       const { data, error } = await supabaseAdmin
         .from("users")
         .insert({
@@ -245,25 +256,16 @@ class UserStorageService {
 
   async updatePromise(promiseId: string, updates: Partial<PromiseData>): Promise<PromiseData> {
     try {
-      const { data: oldPromise, error: fetchError } = await supabaseAdmin
+      const { data } = await supabaseAdmin
         .from("promises")
-        .select("*")
-        .eq("id", promiseId)
-        .single()
-
-      if (fetchError) throw new Error(fetchError.message)
-
-      const { data, error } = await supabaseAdmin
-        .from("promises")
-        .update({ ...updates, updated_at: new Date().toISOString() })
+        .update({ ...updates, updated_at: new Date().toISOString() }) // Add updated_at
         .eq("id", promiseId)
         .select()
         .single()
 
-      if (error) throw new Error(error.message)
-
-      // Reputation update logic is now handled in realtime-service.ts for client-side updates
-      // This backend update is primarily for admin-adjusted progress.
+      if (data === null) {
+        throw new Error("Failed to update promise in Supabase: No data returned")
+      }
 
       console.log(`📝 Updated promise in Supabase: ${promiseId}`)
       return data as PromiseData
@@ -306,7 +308,9 @@ class UserStorageService {
     }
   }
 
-  async getPromises(filter: { address?: string; status?: string; category?: string } = {}): Promise<PromiseData[]> {
+  async getPromises(
+    filter: { address?: string; status?: string; category?: string; id?: string } = {},
+  ): Promise<PromiseData[]> {
     try {
       let query = supabaseAdmin.from("promises").select("*")
 
@@ -318,6 +322,9 @@ class UserStorageService {
       }
       if (filter.category) {
         query = query.eq("category", filter.category)
+      }
+      if (filter.id) {
+        query = query.eq("id", filter.id)
       }
 
       const { data, error } = await query

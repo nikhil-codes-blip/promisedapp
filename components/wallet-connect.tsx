@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label"
 import { Wallet, Copy, Check } from "lucide-react"
 import { toast } from "sonner"
 import { blockchainService } from "@/lib/blockchain-service"
+import { supabaseAuth } from "@/lib/supabase-auth" // Import Supabase auth
 
 interface WalletConnectProps {
   onConnect: (address: string) => void
@@ -31,21 +32,41 @@ export function WalletConnect({ onConnect, isConnected }: WalletConnectProps) {
     if (address.trim()) {
       // Use provided address
       setIsConnecting(true)
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      onConnect(address.trim())
-      setIsOpen(false)
-      setIsConnecting(false)
-      toast.success("Wallet Connected", {
-        description: `Connected with address: ${address.slice(0, 8)}...${address.slice(-8)}`,
-      })
+      try {
+        await supabaseAuth.signInAnonymously(address.trim())
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        onConnect(address.trim())
+        setIsOpen(false)
+        toast.success("Wallet Connected", {
+          description: `Connected with address: ${address.slice(0, 8)}...${address.slice(-8)}`,
+        })
+      } catch (error) {
+        console.error("Failed to authenticate:", error)
+        toast.error("Connection Failed", {
+          description: "Failed to authenticate with database. Check your Supabase integration.",
+        })
+      } finally {
+        setIsConnecting(false)
+      }
     } else {
       // Generate demo address
       const demoAddress = blockchainService.generateAddress()
-      onConnect(demoAddress)
-      setIsOpen(false)
-      toast.info("Demo Wallet Connected", {
-        description: `Connected with demo address: ${demoAddress.slice(0, 8)}...${demoAddress.slice(-8)}`,
-      })
+      setIsConnecting(true)
+      try {
+        await supabaseAuth.signInAnonymously(demoAddress)
+        onConnect(demoAddress)
+        setIsOpen(false)
+        toast.info("Demo Wallet Connected", {
+          description: `Connected with demo address: ${demoAddress.slice(0, 8)}...${demoAddress.slice(-8)}`,
+        })
+      } catch (error) {
+        console.error("Failed to authenticate:", error)
+        toast.error("Connection Failed", {
+          description: "Failed to authenticate with database. Check your Supabase integration.",
+        })
+      } finally {
+        setIsConnecting(false)
+      }
     }
   }
 
@@ -123,7 +144,7 @@ export function WalletConnect({ onConnect, isConnected }: WalletConnectProps) {
               <strong>For Testing:</strong>
             </p>
             <ul className="list-disc list-inside space-y-1">
-              <li>Click &quot;Generate Demo Address&quot; for a random Lisk address</li>
+              <li>Click "Generate Demo Address" for a random Lisk address</li>
               <li>Or enter your actual Lisk address if you have one</li>
               <li>This demo uses mock data - no real transactions are made</li>
             </ul>

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Wallet, Download, AlertCircle } from "lucide-react"
 import { toast } from "sonner"
+import { supabase } from "@/lib/supabase-client" // Import supabase client
 
 interface MetaMaskConnectorProps {
   onConnect: (address: string) => void
@@ -63,13 +64,24 @@ export function MetaMaskConnector({ onConnect, isConnected }: MetaMaskConnectorP
     try {
       setIsConnecting(true)
 
-      // Request account access
+      // Request account access from MetaMask
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       })
 
       if (accounts.length > 0) {
         const address = accounts[0]
+
+        // Sign in anonymously with Supabase to get an auth.uid()
+        const { data, error } = await supabase.auth.signInAnonymously()
+        if (error) {
+          console.error("Supabase anonymous sign-in error:", error)
+          toast.error("Supabase Auth Error", { description: error.message })
+          setIsConnecting(false)
+          return
+        }
+        console.log("Supabase anonymous user:", data.user?.id)
+
         onConnect(address)
 
         // Listen for account changes
@@ -106,6 +118,9 @@ export function MetaMaskConnector({ onConnect, isConnected }: MetaMaskConnectorP
 
   const disconnectWallet = async () => {
     // MetaMask doesn't have a disconnect method, but we can clear our state
+    // Also sign out from Supabase anonymous session
+    await supabase.auth.signOut()
+    onConnect("") // Clear connected address in parent component
     toast.info("ℹ️ Wallet Disconnected", {
       description: "To fully disconnect, use MetaMask extension",
     })
@@ -144,13 +159,11 @@ export function MetaMaskConnector({ onConnect, isConnected }: MetaMaskConnectorP
               MetaMask is not installed. You need MetaMask to connect your wallet and interact with the blockchain.
             </DialogDescription>
           </DialogHeader>
-
           <div className="space-y-4">
             <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4">
               <h4 className="font-semibold text-orange-300 mb-2">🦊 What is MetaMask?</h4>
               <p className="text-sm text-gray-300">
-                MetaMask is a crypto wallet &amp; gateway to blockchain apps. It&apos;s required to interact with this 
-                dApp.
+                MetaMask is a crypto wallet & gateway to blockchain apps. It's required to interact with this dApp.
               </p>
             </div>
 

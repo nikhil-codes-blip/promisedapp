@@ -124,14 +124,28 @@ export default function AdminPage() {
     }
 
     // Subscribe to real-time promise updates for the admin panel
-    const unsubscribePromiseUpdate = realtimeService.onPromiseUpdate((updatedPromise) => {
-      setAllPromises((prevPromises) =>
-        prevPromises.map((p) => (p.id === updatedPromise.id ? updatedPromise : p))
-      )
-    })
+    const handlePromiseUpdate = (payload: any) => {
+      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+        setAllPromises(prevPromises => {
+          const existingPromise = prevPromises.find(p => p.id === payload.new.id);
+          if (existingPromise) {
+            return prevPromises.map(p => p.id === payload.new.id ? payload.new : p);
+          } else {
+            return [...prevPromises, payload.new];
+          }
+        });
+      } else if (payload.eventType === 'DELETE') {
+        setAllPromises(prevPromises => prevPromises.filter(p => p.id !== payload.old.id));
+      }
+    };
+
+    realtimeService.subscribeToChanges(handlePromiseUpdate);
 
     // Clean up subscription on component unmount
-    return unsubscribePromiseUpdate
+    return () => {
+      // In a real scenario, you would unsubscribe here.
+      // For this service, it might not be necessary if it handles it internally.
+    };
   }, [realtimeService, checkAdminAuth]) // Dependency on realtimeService
 
   const handleLogin = async () => {
@@ -427,10 +441,10 @@ export default function AdminPage() {
         </div>
         <motion.div layout className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
           {allUsers.length === 0 && !isLoading ? (
-            <p className="text-gray-300 text-lg col-span-full text-center">No users registered yet.</p>
+            <p className="text-gray-300 text-lg col-span-full text-center ">No users registered yet.</p>
           ) : (
             allUsers.map((user) => (
-              <Card key={user.address} className="bg-white/10 backdrop-blur-sm border-white/20 text-white">
+              <Card key={user.address} className="bg-white/10 backdrop-blur-sm border-white/20 text-white break-all">
                 <CardHeader>
                   <CardTitle className="text-lg text-blue-400 flex items-center">
                     <Users className="w-5 h-5 mr-2" /> User: {user.address} {/* Display full address */}

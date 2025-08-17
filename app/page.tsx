@@ -2,10 +2,11 @@
 
 import type React from "react"
 import { useState, useEffect, useRef } from "react"
-import { motion } from "framer-motion"
+import { motion, AnimatePresence } from "framer-motion"
 import {
   Plus,
   Clock,
+  ArrowUp,
   CheckCircle,
   XCircle,
   Filter,
@@ -40,10 +41,11 @@ import { Toaster, toast } from "sonner"
 import { MetaMaskConnector } from "@/components/metamask-connector"
 import { RealtimeService } from "@/lib/realtime-service"
 import Link from "next/link" // Import Link for navigation
-import Image from "next/image" // Import Image for optimized images
-import type { PromiseData, UserStats as User, GlobalStats } from "@/types" // Import types from central file
+import type { PromiseData, UserStats as User, GlobalStats, RealtimePayload } from "@/types" // Import types from central file
+import { create } from "domain"
 
 export default function PublicPromiseRegistry() {
+  const [showBackToTop, setShowBackToTop] = useState(false)
   const [promises, setPromises] = useState<PromiseData[]>([])
   const [user, setUser] = useState<User | null>(null)
   const [globalStats, setGlobalStats] = useState<GlobalStats | null>(null)
@@ -74,31 +76,41 @@ export default function PublicPromiseRegistry() {
     realtimeService.connect(sessionIdRef.current) // Pass session ID on connect
 
     // Listen for real-time updates
-    realtimeService.onPromiseUpdate((updatedPromise) => {
-      setPromises((prev) => prev.map((p) => (p.id === updatedPromise.id ? updatedPromise : p)))
-      toast.success("Promise Updated", { description: "A promise was updated in real-time!" })
-    })
+    realtimeService.subscribeToChanges((payload: RealtimePayload) => {
+      console.log("Realtime update:", payload);
 
-    realtimeService.onNewPromise((newPromise) => {
-      setPromises((prev) => {
-        // Prevent duplicate if already exists
-        if (prev.some((p) => p.id === newPromise.id)) {
-          return prev
+      if (payload.eventType === "INSERT" && payload.new) {
+        // add new promise
+        setPromises((prev) => [payload.new, ...prev].filter(p => p !== undefined) as PromiseData[]);
+      }
+
+      if (payload.eventType === "UPDATE" && payload.new) {
+        // update existing promise
+        setPromises((prev) =>
+          prev.map((p) => (payload.new && p.id === payload.new.id ? payload.new : p)).filter(p => p !== undefined) as PromiseData[]
+        );
+      }
+
+      if (payload.eventType === "DELETE" && payload.old) {
+        // remove deleted promise
+        if (payload.old) {
+          setPromises((prev) => prev.filter((p) => p.id !== payload.old!.id));
         }
-        return [newPromise, ...prev]
-      })
-      toast.info("New Promise Created", { description: "Someone just created a new promise!" })
-    })
-
-    realtimeService.onPromiseDelete((deletedPromiseId) => {
-      setPromises((prev) => prev.filter((p) => p.id !== deletedPromiseId))
-      toast.info("Promise Deleted", { description: "A promise was removed from the registry by admin." })
-    })
+      }
+    });
 
     realtimeService.onStatsUpdate((stats) => {
       setGlobalStats(stats)
     })
-
+    // ADD THIS NEW LISTENER
+    realtimeService.onUserUpdate((updatedUser) => {
+      // Only update the state if the update is for the currently logged-in user
+      if (user && updatedUser.address.toLowerCase() === user.address.toLowerCase()) {
+        console.log("Received a real-time update for the current user:", updatedUser);
+        setUser(updatedUser);
+      }
+    });
+    
     // Fetch initial promises and global stats from backend (simulated)
     const fetchInitialData = async () => {
       const initialPromises = await realtimeService.getInitialPromises()
@@ -108,7 +120,9 @@ export default function PublicPromiseRegistry() {
 
       // Simulate fetching user data if wallet is already connected
       if (isConnected && user?.address) {
-        const userStats = await realtimeService.getUserStats(user.address)
+        console.log("🔄 Fetching initial user stats for connected wallet:", user.address)
+        const userStats = await realtimeService.getUserStats(user.address, user.name || undefined)
+        console.log("📊 Initial user stats loaded:", userStats)
         setUser((prev) => (prev ? { ...prev, ...userStats } : null))
       }
     }
@@ -117,104 +131,126 @@ export default function PublicPromiseRegistry() {
     return () => {
       realtimeService.disconnect()
     }
-  }, [realtimeService, isConnected, user?.address, hasMounted]) // Added hasMounted as dependency
+  }, [realtimeService, isConnected, user?.address, sessionIdRef.current, hasMounted]) // Added hasMounted as dependency
+
+  // Effect to handle showing the button after scrolling
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > 300) {
+        setShowBackToTop(true)
+      } else {
+        setShowBackToTop(false)
+      }
+    }
+
+    window.addEventListener("scroll", handleScroll)
+    return () => window.removeEventListener("scroll", handleScroll)
+  }, [])
+
+  // Function to scroll to the top smoothly
+  const scrollToTop = () => {
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    })
+  }
 
   const handleWalletConnect = async (address: string) => {
     setIsConnected(true)
-    // Simulate fetching user data from backend after connect
+    console.log("🔗 Wallet connecting to address:", address)
+    
+    // Fetch user data from backend after connect
     const userStats = await realtimeService.getUserStats(address)
-    setUser({
-      address,
-      reputation: userStats.reputation,
-      completedPromises: userStats.completedPromises,
-      failedPromises: userStats.failedPromises,
-      totalPromises: userStats.totalPromises,
-      streak: userStats.streak,
-      level: userStats.level,
-    })
+    console.log("📅 User stats loaded after wallet connect:", userStats)
+    
+    setUser(userStats)
+    
     toast.success("🎉 Wallet Connected!", {
       description: `Connected to ${address.slice(0, 6)}...${address.slice(-4)}`,
     })
+    
+    // Force refresh all data after connection
+    console.log("🔄 Refreshing all data after wallet connection...")
+    const refreshedPromises = await realtimeService.getInitialPromises()
+    setPromises(refreshedPromises)
+    
+    const refreshedStats = await realtimeService.getGlobalStats()
+    setGlobalStats(refreshedStats)
   }
 
-  const createPromise = async (formData: {
-    message: string
-    deadline: string
-    proof?: string
-    category: string
-    difficulty: "easy" | "medium" | "hard"
-  }) => {
-    if (!isConnected || !user?.address) {
-      toast.error("❌ Wallet Not Connected", { description: "Please connect your MetaMask wallet first" })
-      return
+const createPromise = async (formData: {
+  creatorName: string;
+  message: string;
+  deadline: string;
+  proof?: string;
+  category: string;
+  difficulty: "easy" | "medium" | "hard";
+}) => {
+  if (!isConnected || !user?.address || !user.id) {
+    toast.error("❌ Wallet Not Connected", { description: "Please connect your wallet first" });
+    return;
+  }
+
+  try {
+    // If user has no name and they provided one, update their profile
+    if (!user.name && formData.creatorName) {
+      await realtimeService.updateUserName(user.id, formData.creatorName);
     }
 
     const newPromiseData = {
-      address: user.address, // Use real connected address
+      address: user.address,
       message: formData.message,
       deadline: new Date(formData.deadline).getTime(),
-      status: "active" as const, // Explicitly set status
+      status: "active" as const,
       proof: formData.proof,
       category: formData.category,
       difficulty: formData.difficulty,
-    }
+      creatorName: formData.creatorName || user.name, // Use new name or existing name
+    };
 
-    try {
-      // Use the backend to create the promise, which will generate a unique ID
-      await realtimeService.createPromise(newPromiseData as PromiseData) // Cast to Promise
-      // Immediately fetch updated promises to avoid waiting for real-time
-      const updatedPromises = await realtimeService.getInitialPromises()
-      setPromises(updatedPromises)
-      setIsCreateModalOpen(false)
+    await realtimeService.createPromise(newPromiseData as PromiseData);
 
-      toast.success("🚀 Promise Created!", {
-        description: "Your promise has been recorded on the blockchain",
-      })
-    } catch (error) {
-      console.error("Error creating promise:", error)
-      toast.error("Failed to Create Promise", { description: "There was an error creating your promise." })
-    }
+    setIsCreateModalOpen(false);
+
+    // Refresh all data to ensure UI is in sync
+    const updatedPromises = await realtimeService.getInitialPromises();
+    setPromises(updatedPromises);
+    const updatedUserStats = await realtimeService.getUserStats(user.address, user.name || undefined);
+    setUser(updatedUserStats);
+
+    toast.success("🚀 Promise Created!", {
+      description: "Your promise has been recorded.",
+    });
+
+  } catch (error: any) {
+    console.error("Error creating promise:", error);
+    toast.error("Failed to Create Promise", { description: error.message });
   }
+};
 
   const updatePromiseStatus = async (promiseId: string, status: "completed" | "failed", proof?: string) => {
-    if (!isConnected || !user?.address) {
-      toast.error("❌ Wallet Not Connected", { description: "Please connect your MetaMask wallet first" })
-      return
+    if (!user?.address) {
+      toast.error("❌ Wallet Not Authenticated", { description: "Please connect your wallet first" });
+      return;
     }
-
-    const updatedPromise = promises.find((p) => p.id === promiseId)
-    if (!updatedPromise) return
 
     try {
-      await realtimeService.updatePromiseStatus(promiseId, status, proof, user.address)
-      // The `onPromiseUpdate` listener will update `promises` state
+      await realtimeService.updatePromiseStatus(promiseId, status, proof || "", user.address);
+      
 
-      // Update local user stats immediately for responsiveness
-      if (user) {
-        const reputationChange = status === "completed" ? 10 : -5
-        setUser((prev) =>
-          prev
-            ? {
-                ...prev,
-                reputation: Math.max(0, prev.reputation + reputationChange),
-                completedPromises: status === "completed" ? prev.completedPromises + 1 : prev.completedPromises,
-                failedPromises: status === "failed" ? prev.failedPromises + 1 : prev.failedPromises,
-                streak: status === "completed" ? prev.streak + 1 : 0,
-              }
-            : null,
-        )
-      }
-
-      const emoji = status === "completed" ? "🎉" : "😞"
-      const change = status === "completed" ? "+10" : "-5"
+      const emoji = status === "completed" ? "🎉" : "😞";
       toast.success(`${emoji} Promise ${status === "completed" ? "Completed" : "Failed"}`, {
-        description: `Status updated successfully. Reputation ${change}`,
-      })
-    } catch (error) {
-      console.error("Error updating promise status:", error)
-      toast.error("Failed to Update Status", { description: "There was an error updating promise status." })
+        description: "Status updated successfully. Reloading page.",
+      });
+
+      // Reload the page to reflect changes immediately
+      window.location.reload();
+
+    } catch (error: any) {
+      console.error("Error updating promise status:", error);
+      toast.error("Failed to Update Status", { description: error.message });
     }
-  }
+  };
 
   const requestDeletePromise = async (promiseId: string) => {
     if (!isConnected || !user?.address) {
@@ -266,16 +302,27 @@ export default function PublicPromiseRegistry() {
   }
 
   const getProgressPercentage = (promise: PromiseData) => {
-    // Use adminAdjustedProgress if available, otherwise calculate based on time
-    if (typeof promise.adminAdjustedProgress === "number") {
-      return Math.min(100, Math.max(0, promise.adminAdjustedProgress))
-    }
-    const now = Date.now()
-    const total = promise.deadline - promise.createdAt
-    const elapsed = now - promise.createdAt
-    return Math.min(100, Math.max(0, (elapsed / total) * 100))
+  if (typeof promise.adminAdjustedProgress === "number") {
+    return Math.min(100, Math.max(0, promise.adminAdjustedProgress));
+  }
+  
+  // Check for valid date values before calculating
+  if (!promise.createdAt || !promise.deadline || promise.deadline <= promise.createdAt) {
+    // If deadline has already passed, show 100%, otherwise 0%
+    return promise.deadline < Date.now() ? 100 : 0; 
   }
 
+  const now = Date.now();
+  const total = promise.deadline - promise.createdAt;
+  const elapsed = now - promise.createdAt;
+  
+  // Final safety check to prevent division by zero
+  if (total <= 0) {
+    return 100;
+  }
+  
+  return Math.min(100, Math.max(0, (elapsed / total) * 100));
+};
   const getCategoryColor = (category: string) => {
     const colors = {
       Learning: "bg-gradient-to-r from-purple-500 to-pink-500",
@@ -296,36 +343,52 @@ export default function PublicPromiseRegistry() {
     )
   }
 
+  // In PublicPromiseRegistry component, add this new function
+  const updatePromiseDetails = async (promiseId: string, updates: Partial<PromiseData>) => {
+    if (!isConnected || !user?.address) {
+      toast.error("❌ Wallet Not Connected", { description: "Please connect your MetaMask wallet first" })
+      return
+    }
+
+    try {
+      await realtimeService.updatePromiseDetails(promiseId, updates, user.address)
+      // The `onPromiseUpdate` listener will update `promises` state
+      toast.success("📝 Promise Updated", {
+        description: "Your promise details have been updated successfully.",
+      })
+    } catch (error) {
+      console.error("Error updating promise details:", error)
+      toast.error("Failed to Update Promise", { description: "There was an error updating your promise." })
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 text-white">
+    <div className="min-h-screen overflow-x-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 text-white">
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex justify-between items-center mb-8"
+          className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8"
         >
-          <div>
-            <h1 className="flex items-center gap-3 text-5xl font-bold leading-tight">
-              <Image
-                src="/logo.png" // <- changed from placeholder.svg
+          <div className="mb-8">
+            <div className="flex items-center gap-4">
+              <img
+                src="/logo.png"
                 alt="Promise Registry Logo"
-                width={64}
-                height={64}
-                className="object-contain"
+                className="w-16 h-16 md:w-20 md:h-20 object-contain"
               />
-              <span className="bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+              <h1 className="bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 bg-clip-text text-transparent text-3xl md:text-4xl font-bold">
                 Promise Registry
-              </span>
-            </h1>
-            <p className="text-cyan-300 mt-3 text-lg ml-20">
+              </h1>
+            </div>
+            <p className="text-cyan-300 mt-3 text-base md:text-lg ml-0 md:ml-20">
               Commit to your goals on the blockchain ⛓️
             </p>
           </div>
 
-
-          <div className="flex items-center gap-4">
-            {user && isConnected && (
+          <div className="flex w-full flex-col gap-4 sm:w-auto sm:flex-row sm:items-center">
+            {/* {user && isConnected && (
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
@@ -337,7 +400,7 @@ export default function PublicPromiseRegistry() {
                   Level {user.level} • {user.streak} streak 🔥
                 </p>
               </motion.div>
-            )}
+            )} */}
 
             <MetaMaskConnector onConnect={handleWalletConnect} isConnected={isConnected} />
             <Link href="/admin" passHref>
@@ -353,45 +416,54 @@ export default function PublicPromiseRegistry() {
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8"
+            className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8"
           >
-            <Card className="bg-gradient-to-r from-cyan-600 to-blue-600 border-0 text-white">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">Total Users</CardTitle>
-                  <Users className="w-5 h-5" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{globalStats.totalUsers.toLocaleString()}</p>
-              </CardContent>
-            </Card>
+          <Card className="bg-gradient-to-r from-cyan-600 to-blue-600 border-0 text-white h-full">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white">👥 Total Users</CardTitle>
+                <Users className="w-6 h-6" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">{globalStats.totalUsers.toLocaleString()}</p>
+              <p className="text-sm opacity-80">Total registered users</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-gradient-to-r from-purple-600 to-pink-600 border-0 text-white h-full">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white">🎯 Total Promises</CardTitle>
+                <Target className="w-6 h-6" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">{promises.length}</p>
+              <p className="text-sm opacity-80">Across the network</p>
+            </CardContent>
+          </Card>
 
-            <Card className="bg-gradient-to-r from-purple-600 to-pink-600 border-0 text-white">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">Total Promises</CardTitle>
-                  <Target className="w-5 h-5" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{globalStats.totalPromises.toLocaleString()}</p>
-              </CardContent>
-            </Card>
+            <Card className="bg-gradient-to-r from-green-600 to-emerald-600 border-0 text-white  h-full">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white">📈 Success Rate</CardTitle>
+                <TrendingUp className="w-6 h-6" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl md:text-2xl font-bold">
+                {(() => {
+                  const total = promises.length;
+                  const completed = promises.filter(p => p.status === 'completed').length;
+                  const rate = total > 0 ? (completed / total) * 100 : 0;
+                  return `${rate.toFixed(2)}%`;
+                })()}
+              </p>
+              <p className="text-sm opacity-80">Of all promises</p>
+            </CardContent>
+          </Card>
 
-            <Card className="bg-gradient-to-r from-green-600 to-emerald-600 border-0 text-white">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
-                  <TrendingUp className="w-5 h-5" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{globalStats.completionRate.toFixed(2)}%</p>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-gradient-to-r from-yellow-600 to-orange-600 border-0 text-white">
+            {/* <Card className="bg-gradient-to-r from-yellow-600 to-orange-600 border-0 text-white">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm font-medium">Avg Reputation</CardTitle>
@@ -401,34 +473,33 @@ export default function PublicPromiseRegistry() {
               <CardContent>
                 <p className="text-2xl font-bold">{globalStats.averageReputation.toFixed(2)}</p>
               </CardContent>
-            </Card>
+            </Card> */}
 
             <Card className="bg-gradient-to-r from-pink-600 to-red-600 border-0 text-white">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">Top Performer</CardTitle>
-                  <Star className="w-5 h-5" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm font-bold">
-                  {globalStats.topPerformer
-                    ? `${globalStats.topPerformer.slice(0, 6)}...${globalStats.topPerformer.slice(-4)}`
-                    : "N/A"}
-                </p>
-              </CardContent>
-            </Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-white">⭐ Top Performer</CardTitle>
+                <Star className="w-6 h-6" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl md:text-2xl font-bold truncate">
+                {globalStats.topPerformer || "N/A"}
+              </p>
+              <p className="text-sm opacity-80">Highest reputation</p>
+            </CardContent>
+          </Card>
           </motion.div>
         )}
 
         {/* User Stats */}
-        {user && isConnected && (
+        {user && isConnected && globalStats && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8"
+            className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8"
           >
-            <Card className="bg-gradient-to-r from-green-500 to-emerald-500 border-0 text-white">
+            <Card className="bg-gradient-to-r from-green-500 to-emerald-500 border-0 text-white flex flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-white">✅ Completed</CardTitle>
@@ -436,12 +507,12 @@ export default function PublicPromiseRegistry() {
                 </div>
               </CardHeader>
               <CardContent>
-                <p className="text-3xl font-bold">{user.completedPromises}</p>
-                <p className="text-sm opacity-80">+{user.completedPromises * 10} reputation</p>
+                <p className="text-2xl md:text-3xl font-bold">{promises.filter((p) => p.status === "completed").length}</p>
+                <p className="text-sm opacity-80">Across the network</p>
               </CardContent>
             </Card>
 
-            <Card className="bg-gradient-to-r from-red-500 to-pink-500 border-0 text-white">
+            <Card className="bg-gradient-to-r from-red-500 to-pink-500 border-0 text-white flex flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-white">❌ Failed</CardTitle>
@@ -449,12 +520,12 @@ export default function PublicPromiseRegistry() {
                 </div>
               </CardHeader>
               <CardContent>
-                <p className="text-3xl font-bold">{user.failedPromises}</p>
-                <p className="text-sm opacity-80">-{user.failedPromises * 5} reputation</p>
+                <p className=" text-2xl md:text-3xl font-bold">{promises.filter((p) => p.status === "failed").length}</p>
+                <p className="text-sm opacity-80">Across the network</p>
               </CardContent>
             </Card>
 
-            <Card className="bg-gradient-to-r from-blue-500 to-cyan-500 border-0 text-white">
+            <Card className="bg-gradient-to-r from-blue-500 to-cyan-500 border-0 text-white flex flex-col">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-white">⏳ Active</CardTitle>
@@ -462,35 +533,24 @@ export default function PublicPromiseRegistry() {
                 </div>
               </CardHeader>
               <CardContent>
-                <p className="text-3xl font-bold">{promises.filter((p) => p.status === "active").length}</p>
+                <p className="text-2xl md:text-3xl font-bold">{promises.filter((p) => p.status === "active").length}</p>
                 <p className="text-sm opacity-80">In progress</p>
               </CardContent>
             </Card>
-
-            <Card className="bg-gradient-to-r from-orange-500 to-yellow-500 border-0 text-white">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-white">🔥 Streak</CardTitle>
-                  <Zap className="w-6 h-6" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold">{user.streak}</p>
-                <p className="text-sm opacity-80">Consecutive wins</p>
-              </CardContent>
-            </Card>
           </motion.div>
-        )}
+        )}    
+          
+        
 
         {/* Controls */}
-        <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-6">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full max-w-full">
             <Select value={filter} onValueChange={(value: any) => setFilter(value)}>
               <SelectTrigger className="w-40 bg-white/10 border-white/20 text-white backdrop-blur-sm">
                 <Filter className="w-4 h-4 mr-2" />
-                <SelectValue />
+                <SelectValue placeholder="All Promises" />
               </SelectTrigger>
-              <SelectContent className="bg-gray-900 border-gray-700 text-white">
+              <SelectContent className="bg-gray-900 border-gray-700 text-white w-full max-w-[90vw]">
                 <SelectItem value="all">All Promises</SelectItem>
                 {user && isConnected && <SelectItem value="my">My Promises</SelectItem>}
                 <SelectItem value="active">Active</SelectItem>
@@ -511,14 +571,14 @@ export default function PublicPromiseRegistry() {
             </DialogTrigger>
             <DialogContent className="bg-gray-900 border-purple-500/50 text-white max-w-md">
               <DialogHeader>
-                <DialogTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                <DialogTitle className="text-2xl md:text-2xl  bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
                   Create New Promise
                 </DialogTitle>
                 <DialogDescription className="text-gray-300">
                   Make a public commitment that will be recorded on the blockchain
                 </DialogDescription>
               </DialogHeader>
-              <CreatePromiseForm onSubmit={createPromise} isConnected={isConnected} />
+              <CreatePromiseForm onSubmit={createPromise} isConnected={isConnected} user={user} />
             </DialogContent>
           </Dialog>
         </div>
@@ -530,11 +590,13 @@ export default function PublicPromiseRegistry() {
               key={promise.id}
               promise={promise}
               onUpdateStatus={updatePromiseStatus}
-              onRequestDelete={requestDeletePromise} // Pass request delete handler
-              currentUserAddress={user?.address} // Pass current user's address
+              onRequestDelete={requestDeletePromise}
+              onUpdateDetails={updatePromiseDetails} // Pass the new handler
+              currentUserAddress={user?.address}
               getTimeRemaining={getTimeRemaining}
               getProgressPercentage={getProgressPercentage}
               getCategoryColor={getCategoryColor}
+              isConnected={isConnected} // Pass isConnected
             />
           ))}
         </motion.div>
@@ -545,13 +607,34 @@ export default function PublicPromiseRegistry() {
           </motion.div>
         )}
       </div>
+      {/* Back to Top Button */}
+      <AnimatePresence>
+        {showBackToTop && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-8 right-8 z-50"
+          >
+            <Button
+              onClick={scrollToTop}
+              className="h-14 w-14 rounded-full p-0 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+              aria-label="Back to top"
+            >
+              <ArrowUp className="h-8 w-8" />
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <Toaster theme="dark" />
     </div>
   )
 }
 
-function CreatePromiseForm({ onSubmit, isConnected }: { onSubmit: (data: any) => void; isConnected: boolean }) {
+function CreatePromiseForm({ onSubmit, isConnected, user }: { onSubmit: (data: any) => void; isConnected: boolean; user: User | null }) {
   const [formData, setFormData] = useState({
+    creatorName: "",
     message: "",
     deadline: "",
     proof: "",
@@ -578,7 +661,7 @@ function CreatePromiseForm({ onSubmit, isConnected }: { onSubmit: (data: any) =>
     setIsSubmitting(true) // Disable button and fields
     try {
       await onSubmit(formData)
-      setFormData({ message: "", deadline: "", proof: "", category: "Personal", difficulty: "medium" })
+      setFormData({ creatorName: "", message: "", deadline: "", proof: "", category: "Personal", difficulty: "medium" })
     } finally {
       setIsSubmitting(false) // Re-enable button and fields
     }
@@ -586,6 +669,22 @@ function CreatePromiseForm({ onSubmit, isConnected }: { onSubmit: (data: any) =>
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {!user?.name && (
+        <div>
+          <Label htmlFor="creatorName" className="text-purple-300">
+            Your Name
+          </Label>
+          <Input
+            id="creatorName"
+            value={formData.creatorName}
+            onChange={(e) => setFormData((prev) => ({ ...prev, creatorName: e.target.value }))}
+            placeholder="Enter your name or nickname"
+            className="bg-gray-800 border-purple-500/50 text-white placeholder:text-gray-400"
+            required
+            disabled={isSubmitting}
+          />
+        </div>
+      )}
       <div>
         <Label htmlFor="message" className="text-purple-300">
           Promise Description
@@ -688,26 +787,37 @@ function CreatePromiseForm({ onSubmit, isConnected }: { onSubmit: (data: any) =>
   )
 }
 
+// In PromiseCard component, add new state for edit modal
+// Add new prop for onUpdateDetails
+interface PromiseCardProps {
+  promise: PromiseData
+  onUpdateStatus: (id: string, status: "completed" | "failed", proof?: string) => void
+  onRequestDelete: (id: string) => void
+  onUpdateDetails: (id: string, updates: Partial<PromiseData>) => void // New prop
+  currentUserAddress?: string
+  getTimeRemaining: (deadline: number) => string
+  getProgressPercentage: (promise: PromiseData) => number
+  getCategoryColor: (category: string) => string
+  isConnected: boolean // Pass isConnected prop
+}
+
+// Update PromiseCard function signature
 function PromiseCard({
   promise,
   onUpdateStatus,
   onRequestDelete,
+  onUpdateDetails, // Destructure new prop
   currentUserAddress,
   getTimeRemaining,
   getProgressPercentage,
   getCategoryColor,
-}: {
-  promise: PromiseData
-  onUpdateStatus: (id: string, status: "completed" | "failed", proof?: string) => void
-  onRequestDelete: (id: string) => void
-  currentUserAddress?: string
-  getTimeRemaining: (deadline: number) => string
-  getProgressPercentage: (promise: PromiseData) => number // Changed type to accept Promise object
-  getCategoryColor: (category: string) => string
-}) {
+  isConnected, // Destructure new prop
+}: PromiseCardProps) {
+  const [updateProof, setUpdateProof] = useState(promise.proof || ""); // <-- ADD THIS LINE
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false)
   const [isDeleteRequestConfirmOpen, setIsDeleteRequestConfirmOpen] = useState(false)
-  const [updateProof, setUpdateProof] = useState(promise.proof || "")
+  // In PromiseCard component, add new state for edit modal
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
 
   const handleStatusUpdate = (status: "completed" | "failed") => {
     onUpdateStatus(promise.id, status, updateProof)
@@ -759,6 +869,11 @@ function PromiseCard({
   // Check if the current user is the owner of the promise
   const isOwner = currentUserAddress?.toLowerCase() === promise.address.toLowerCase()
 
+  const handleUpdateDetails = async (updates: Partial<PromiseData>) => {
+    await onUpdateDetails(promise.id, updates)
+    setIsEditModalOpen(false)
+  }
+
   return (
     <motion.div
       layout
@@ -784,9 +899,9 @@ function PromiseCard({
 
           <div className={`w-full h-1 rounded-full ${getCategoryColor(promise.category)} mb-3`}></div>
 
-          <CardTitle className="text-lg text-white">{promise.message}</CardTitle>
-          <CardDescription className="text-gray-300">
-            📍 {promise.address.slice(0, 6)}...{promise.address.slice(-4)} • {promise.category}
+          <CardTitle className="text-lg text-white break-all">{promise.message}</CardTitle>
+          <CardDescription className="text-gray-300 break-all">
+            👤 {promise.creatorName || 'Unknown'} • {promise.category}
           </CardDescription>
         </CardHeader>
 
@@ -817,60 +932,90 @@ function PromiseCard({
 
           {promise.status === "active" &&
             isOwner && ( // Only show update status if active AND owner
-              <Dialog open={isUpdateModalOpen} onOpenChange={setIsUpdateModalOpen}>
-                <DialogTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="w-full border-purple-500/50 hover:bg-purple-500/20 bg-transparent text-white"
-                  >
-                    ⚡ Update Status
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="bg-gray-900 border-purple-500/50 text-white">
-                  <DialogHeader>
-                    <DialogTitle className="text-xl bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                      Update Promise Status
-                    </DialogTitle>
-                    <DialogDescription className="text-gray-300">
-                      Mark this promise as completed or failed
-                    </DialogDescription>
-                  </DialogHeader>
+              <>
+                {/* ... existing Update Status Dialog ... */}
 
-                  <div className="space-y-4">
-                    <div>
-                      <Label htmlFor="update-proof" className="text-purple-300">
-                        Proof URL (Optional)
-                      </Label>
-                      <Input
-                        id="update-proof"
-                        type="url"
-                        value={updateProof}
-                        onChange={(e) => setUpdateProof(e.target.value)}
-                        placeholder="https://github.com/user/project 🔗"
-                        className="bg-gray-800 border-purple-500/50 text-white placeholder:text-gray-400"
-                      />
-                    </div>
+                <Dialog open={isUpdateModalOpen} onOpenChange={setIsUpdateModalOpen}>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full border-purple-500/50 hover:bg-purple-500/20 bg-transparent text-white"
+                    >
+                      ⚡ Update Status
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="bg-gray-900 border-purple-500/50 text-white">
+                    <DialogHeader>
+                      <DialogTitle className="text-xl bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                        Update Promise Status
+                      </DialogTitle>
+                      <DialogDescription className="text-gray-300">
+                        Mark this promise as completed or failed
+                      </DialogDescription>
+                    </DialogHeader>
 
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => handleStatusUpdate("completed")}
-                        className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
-                      >
-                        <CheckCircle className="w-4 h-4 mr-2" />✅ Completed
-                      </Button>
-                      <Button
-                        onClick={() => handleStatusUpdate("failed")}
-                        className="flex-1 bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700"
-                      >
-                        <XCircle className="w-4 h-4 mr-2" />❌ Failed
-                      </Button>
+                    <div className="space-y-4">
+                      <div>
+                        <Label htmlFor="update-proof" className="text-purple-300">
+                          Proof URL (Optional)
+                        </Label>
+                        <Input
+                          id="update-proof"
+                          type="url"
+                          value={updateProof} // Set the value
+                          onChange={(e) => setUpdateProof(e.target.value)} // Update the state on change
+                          placeholder="https://github.com/user/project 🔗"
+                          className="bg-gray-800 border-purple-500/50 text-white placeholder:text-gray-400"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => handleStatusUpdate("completed")}
+                          className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
+                        >
+                          <CheckCircle className="w-4 h-4 mr-2" />✅ Completed
+                        </Button>
+                        <Button
+                          onClick={() => handleStatusUpdate("failed")}
+                          className="flex-1 bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700"
+                        >
+                          <XCircle className="w-4 h-4 mr-2" />❌ Failed
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                </DialogContent>
-              </Dialog>
+                  </DialogContent>
+                </Dialog>
+
+                <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full border-blue-500/50 hover:bg-blue-500/20 bg-transparent text-blue-400"
+                    >
+                      ✏️ Edit Promise
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="bg-gray-900 border-blue-500/50 text-white max-w-md">
+                    <DialogHeader>
+                      <DialogTitle className="text-2xl bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                        Edit Promise
+                      </DialogTitle>
+                      <DialogDescription className="text-gray-300">
+                        Update the details of your active promise.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <EditPromiseForm
+                      promise={promise}
+                      onSubmit={handleUpdateDetails}
+                      isConnected={isConnected}
+                      onClose={() => setIsEditModalOpen(false)}
+                    />
+                  </DialogContent>
+                </Dialog>
+              </>
             )}
 
-          {isOwner && ( // Show request delete button if current user is the owner, regardless of status
+          {isOwner && (
             <Button
               variant="outline"
               className="w-full border-red-500/50 hover:bg-red-500/20 bg-transparent text-red-400"
@@ -912,5 +1057,155 @@ function PromiseCard({
         </CardContent>
       </Card>
     </motion.div>
+  )
+}
+
+function EditPromiseForm({
+  promise,
+  onSubmit,
+  isConnected,
+  onClose,
+}: {
+  promise: PromiseData
+  onSubmit: (data: any) => void
+  isConnected: boolean
+  onClose: () => void
+}) {
+  const [formData, setFormData] = useState({
+    message: promise.message,
+    deadline: new Date(promise.deadline).toISOString().slice(0, 16), // Format for datetime-local input
+    proof: promise.proof || "",
+    category: promise.category,
+    difficulty: promise.difficulty,
+  })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!isConnected) {
+      toast.error("Wallet Not Connected", { description: "Please connect your MetaMask wallet first." })
+      return
+    }
+    if (formData.message.length > 200) {
+      toast.error("Message Too Long", { description: "Promise message cannot exceed 200 characters." })
+      return
+    }
+    if (new Date(formData.deadline) <= new Date()) {
+      toast.error("Invalid Deadline", { description: "Deadline must be in the future." })
+      return
+    }
+
+    setIsSubmitting(true)
+    try {
+      await onSubmit({
+        ...formData,
+        deadline: new Date(formData.deadline).getTime(), // Convert back to timestamp
+      })
+      onClose() // Close modal on success
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <Label htmlFor="edit-message" className="text-purple-300">
+          Promise Description
+        </Label>
+        <Textarea
+          id="edit-message"
+          value={formData.message}
+          onChange={(e) => setFormData((prev) => ({ ...prev, message: e.target.value }))}
+          maxLength={200}
+          className="bg-gray-800 border-purple-500/50 text-white placeholder:text-gray-400"
+          required
+          disabled={isSubmitting}
+        />
+        <p className="text-sm text-gray-400 mt-1">{formData.message.length}/200 characters</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label htmlFor="edit-category" className="text-purple-300">
+            Category
+          </Label>
+          <Select
+            value={formData.category}
+            onValueChange={(value) => setFormData((prev) => ({ ...prev, category: value }))}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger className="bg-gray-800 border-purple-500/50 text-white">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-gray-800 border-gray-700 text-white">
+              <SelectItem value="Learning">📚 Learning</SelectItem>
+              <SelectItem value="Health">💪 Health</SelectItem>
+              <SelectItem value="Personal">🌟 Personal</SelectItem>
+              <SelectItem value="Business">💼 Business</SelectItem>
+              <SelectItem value="Creative">🎨 Creative</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div>
+          <Label htmlFor="edit-difficulty" className="text-purple-300">
+            Difficulty
+          </Label>
+          <Select
+            value={formData.difficulty}
+            onValueChange={(value: any) => setFormData((prev) => ({ ...prev, difficulty: value }))}
+            disabled={isSubmitting}
+          >
+            <SelectTrigger className="bg-gray-800 border-purple-500/50 text-white">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-gray-800 border-gray-700 text-white">
+              <SelectItem value="easy">🟢 Easy</SelectItem>
+              <SelectItem value="medium">🟡 Medium</SelectItem>
+              <SelectItem value="hard">🔴 Hard</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div>
+        <Label htmlFor="edit-deadline" className="text-purple-300">
+          Deadline
+        </Label>
+        <Input
+          id="edit-deadline"
+          type="datetime-local"
+          value={formData.deadline}
+          onChange={(e) => setFormData((prev) => ({ ...prev, deadline: e.target.value }))}
+          className="bg-gray-800 border-purple-500/50 text-white"
+          required
+          disabled={isSubmitting}
+        />
+      </div>
+
+      <div>
+        <Label htmlFor="edit-proof" className="text-purple-300">
+          Proof URL (Optional)
+        </Label>
+        <Input
+          id="edit-proof"
+          type="url"
+          value={formData.proof}
+          onChange={(e) => setFormData((prev) => ({ ...prev, proof: e.target.value }))}
+          placeholder="https://github.com/user/project 🔗"
+          className="bg-gray-800 border-purple-500/50 text-white placeholder:text-gray-400"
+          disabled={isSubmitting}
+        />
+      </div>
+
+      <Button
+        type="submit"
+        className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold py-3 rounded-xl"
+        disabled={!isConnected || isSubmitting}
+      >
+        {isSubmitting ? "Saving Changes..." : "💾 Save Changes"}
+      </Button>
+    </form>
   )
 }
