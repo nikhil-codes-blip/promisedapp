@@ -271,7 +271,7 @@ export default function AdminPage() {
               {isLoading ? "Authenticating..." : "Login as Admin"}
             </Button>
             <p className="text-sm text-gray-400 text-center">
-              **IMPORTANT**: The admin address is configured via environment variable `ADMIN_WALLET_ADDRESS`.
+              The application uses a designated control account, configured through an environment variable.
             </p>
           </CardContent>
         </Card>
