@@ -42,7 +42,7 @@ Data is stored on **Supabase** with **MetaMask wallet integration** for identity
 
 ### ⚡ 1. Clone and Install  
 ```bash
-git clone <repository-url>
+git clone <https://github.com/nikhil-codes-blip/promisedapp.git>
 cd public-promise-registry
 npm install
 ```
@@ -102,11 +102,60 @@ Visit 👉 http://localhost:3000
 ## 🛠 Development
 ### 📂 Project Structure
 ```
-├── app/                    # Next.js app directory
-├── components/             # React components
-├── lib/                    # Utility libraries (Supabase + wallet)
-├── public/                 # Static assets
-└── README.md
+├── components.json
+├── eslint.config.mjs
+├── gitkey
+├── gitkey.pub
+├── next-env.d.ts
+├── next.config.ts
+├── package-lock.json
+├── package.json
+├── postcss.config.js
+├── README.md
+├── supabase_rpc_function.sql
+├── tailwind.config.js
+├── tailwind.config.ts
+├── tsconfig.json
+
+├── app/
+│   ├── favicon.ico
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx
+
+├── components/
+│   ├── metamask-connector.tsx
+│   ├── promise-card.tsx
+│   ├── promise-stats.tsx
+│   └── wallet-connect.tsx
+
+├── lib/
+│   ├── blockchain-service.ts
+│   ├── realtime-service.ts
+│   ├── supabase-auth.ts
+│   ├── supabase-client.ts
+│   └── utils.ts
+
+├── public/
+│   ├── file.svg
+│   ├── globe.svg
+│   ├── logo.png
+│   ├── my-icon.jpg
+│   ├── next.svg
+│   ├── vercel.svg
+│   └── window.svg
+
+├── scripts/
+│   └── fix-user-reputation.ts
+
+├── sql/
+│   ├── get_global_stats.sql
+│   ├── increment_column.sql
+│   └── update_promise_status.sql
+
+└── types/
+    └── index.ts
+
 ```
 ### 🔑 Key Components
 - `app/page.tsx`: Main dashboard
